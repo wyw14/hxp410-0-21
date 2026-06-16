@@ -2,14 +2,20 @@ const express = require('express');
 const cors = require('cors');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 
 const app = express();
 const PORT = 41121;
 
+const ADMIN_PASSWORD = 'admin123';
+const TOKEN_EXPIRE_HOURS = 24;
+
 const DATA_DIR = path.join(__dirname, 'data');
 const SECRETS_FILE = path.join(DATA_DIR, 'secrets.json');
 const COMFORT_FILE = path.join(DATA_DIR, 'comfort-messages.json');
+const DAILY_SELECTION_FILE = path.join(DATA_DIR, 'daily-comfort-selection.json');
+const ADMIN_TOKENS_FILE = path.join(DATA_DIR, 'admin-tokens.json');
 
 if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -65,6 +71,14 @@ if (!fs.existsSync(COMFORT_FILE)) {
   fs.writeFileSync(COMFORT_FILE, JSON.stringify(defaultComfort, null, 2));
 }
 
+if (!fs.existsSync(DAILY_SELECTION_FILE)) {
+  fs.writeFileSync(DAILY_SELECTION_FILE, JSON.stringify({}));
+}
+
+if (!fs.existsSync(ADMIN_TOKENS_FILE)) {
+  fs.writeFileSync(ADMIN_TOKENS_FILE, JSON.stringify([]));
+}
+
 app.use(cors());
 app.use(express.json());
 
@@ -84,6 +98,53 @@ function readComfort() {
 
 function writeComfort(comfort) {
   fs.writeFileSync(COMFORT_FILE, JSON.stringify(comfort, null, 2));
+}
+
+function readDailySelection() {
+  const data = fs.readFileSync(DAILY_SELECTION_FILE, 'utf8');
+  return JSON.parse(data);
+}
+
+function writeDailySelection(selection) {
+  fs.writeFileSync(DAILY_SELECTION_FILE, JSON.stringify(selection, null, 2));
+}
+
+function readAdminTokens() {
+  const data = fs.readFileSync(ADMIN_TOKENS_FILE, 'utf8');
+  return JSON.parse(data);
+}
+
+function writeAdminTokens(tokens) {
+  fs.writeFileSync(ADMIN_TOKENS_FILE, JSON.stringify(tokens, null, 2));
+}
+
+function hashPassword(password) {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
+
+function generateToken() {
+  return crypto.randomBytes(32).toString('hex');
+}
+
+function verifyAdminToken(req) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return false;
+  }
+
+  const token = authHeader.split(' ')[1];
+  const tokens = readAdminTokens();
+  const now = Date.now();
+
+  const validToken = tokens.find(t => t.token === token && t.expiresAt > now);
+  return !!validToken;
+}
+
+function adminAuthMiddleware(req, res, next) {
+  if (!verifyAdminToken(req)) {
+    return res.status(401).json({ error: '无权限访问，请先登录' });
+  }
+  next();
 }
 
 function getDailyComfortIndex(total, dateStr) {
@@ -159,21 +220,99 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+app.post('/api/admin/login', (req, res) => {
+  try {
+    const { password } = req.body;
+
+    if (!password) {
+      return res.status(400).json({ error: '请输入密码' });
+    }
+
+    if (password !== ADMIN_PASSWORD) {
+      return res.status(401).json({ error: '密码错误' });
+    }
+
+    const token = generateToken();
+    const expiresAt = Date.now() + TOKEN_EXPIRE_HOURS * 60 * 60 * 1000;
+
+    const tokens = readAdminTokens();
+    tokens.push({ token, expiresAt, createdAt: Date.now() });
+    writeAdminTokens(tokens.filter(t => t.expiresAt > Date.now()));
+
+    res.json({
+      success: true,
+      token,
+      expiresAt
+    });
+  } catch (error) {
+    console.error('登录时出错:', error);
+    res.status(500).json({ error: '服务器内部错误' });
+  }
+});
+
+app.post('/api/admin/logout', (req, res) => {
+  try {
+    const authHeader = req.headers.authorization;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      const tokens = readAdminTokens();
+      writeAdminTokens(tokens.filter(t => t.token !== token));
+    }
+    res.json({ success: true, message: '已退出登录' });
+  } catch (error) {
+    console.error('退出登录时出错:', error);
+    res.status(500).json({ error: '服务器内部错误' });
+  }
+});
+
+app.get('/api/admin/verify', (req, res) => {
+  try {
+    const isAdmin = verifyAdminToken(req);
+    res.json({ isAdmin });
+  } catch (error) {
+    console.error('验证权限时出错:', error);
+    res.status(500).json({ error: '服务器内部错误' });
+  }
+});
+
 app.get('/api/comfort/today', (req, res) => {
   try {
     const comfortMessages = readComfort();
     const activeMessages = comfortMessages.filter(m => m.status === 'active');
+    const today = new Date().toISOString().split('T')[0];
+    const dailySelection = readDailySelection();
 
-    if (activeMessages.length === 0) {
+    let todayMessage = null;
+    let selectedMessageId = null;
+
+    if (dailySelection[today]) {
+      selectedMessageId = dailySelection[today].messageId;
+      todayMessage = comfortMessages.find(m => m.id === selectedMessageId);
+      
+      if (!todayMessage) {
+        delete dailySelection[today];
+        writeDailySelection(dailySelection);
+      }
+    }
+
+    if (!todayMessage && activeMessages.length === 0) {
       return res.json({
         hasMessage: false,
         message: '暂时没有安慰文案'
       });
     }
 
-    const today = new Date().toISOString().split('T')[0];
-    const index = getDailyComfortIndex(activeMessages.length, today);
-    const todayMessage = activeMessages[index];
+    if (!todayMessage) {
+      const index = getDailyComfortIndex(activeMessages.length, today);
+      todayMessage = activeMessages[index];
+      selectedMessageId = todayMessage.id;
+
+      dailySelection[today] = {
+        messageId: selectedMessageId,
+        selectedAt: new Date().toISOString()
+      };
+      writeDailySelection(dailySelection);
+    }
 
     res.json({
       hasMessage: true,
@@ -182,7 +321,8 @@ app.get('/api/comfort/today', (req, res) => {
         content: todayMessage.content,
         author: todayMessage.author
       },
-      date: today
+      date: today,
+      isOriginalActive: todayMessage.status === 'active'
     });
   } catch (error) {
     console.error('获取今日安慰文案时出错:', error);
@@ -190,7 +330,7 @@ app.get('/api/comfort/today', (req, res) => {
   }
 });
 
-app.get('/api/comfort', (req, res) => {
+app.get('/api/comfort', adminAuthMiddleware, (req, res) => {
   try {
     const comfortMessages = readComfort();
     const { status } = req.query;
@@ -210,7 +350,7 @@ app.get('/api/comfort', (req, res) => {
   }
 });
 
-app.post('/api/comfort', (req, res) => {
+app.post('/api/comfort', adminAuthMiddleware, (req, res) => {
   try {
     const { content, author } = req.body;
 
@@ -242,7 +382,7 @@ app.post('/api/comfort', (req, res) => {
   }
 });
 
-app.put('/api/comfort/:id', (req, res) => {
+app.put('/api/comfort/:id', adminAuthMiddleware, (req, res) => {
   try {
     const { id } = req.params;
     const { content, author } = req.body;
@@ -278,7 +418,7 @@ app.put('/api/comfort/:id', (req, res) => {
   }
 });
 
-app.patch('/api/comfort/:id/status', (req, res) => {
+app.patch('/api/comfort/:id/status', adminAuthMiddleware, (req, res) => {
   try {
     const { id } = req.params;
     const { status } = req.body;

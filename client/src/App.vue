@@ -9,7 +9,12 @@
         <router-link to="/confess" class="nav-link" :class="{ active: $route.path === '/confess' }">
           倾诉秘密
         </router-link>
-        <router-link to="/admin/comfort" class="nav-link" :class="{ active: $route.path === '/admin/comfort' }">
+        <router-link 
+          v-if="isAdmin" 
+          to="/admin/comfort" 
+          class="nav-link" 
+          :class="{ active: $route.path === '/admin/comfort' }"
+        >
           电台管理
         </router-link>
       </nav>
@@ -28,6 +33,49 @@
 </template>
 
 <script setup>
+import { ref, onMounted, watch } from 'vue'
+import { useRoute } from 'vue-router'
+
+const TOKEN_KEY = 'admin_token'
+const isAdmin = ref(false)
+const route = useRoute()
+
+async function verifyAdmin() {
+  const token = localStorage.getItem(TOKEN_KEY)
+  if (!token) {
+    isAdmin.value = false
+    return
+  }
+
+  try {
+    const response = await fetch('/api/admin/verify', {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    const data = await response.json()
+    isAdmin.value = data.isAdmin
+  } catch (error) {
+    console.error('验证管理员状态失败:', error)
+    isAdmin.value = false
+  }
+}
+
+watch(() => route.path, () => {
+  verifyAdmin()
+})
+
+onMounted(() => {
+  verifyAdmin()
+})
+
+window.addEventListener('admin-login', () => {
+  isAdmin.value = true
+})
+
+window.addEventListener('admin-logout', () => {
+  isAdmin.value = false
+})
 </script>
 
 <style scoped>

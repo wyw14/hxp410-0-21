@@ -21,6 +21,7 @@
         <div class="comfort-content">
           <p class="comfort-text">"{{ todayComfort.content }}"</p>
           <p class="comfort-author">—— {{ todayComfort.author }}</p>
+          <p v-if="!isOriginalActive" class="expired-hint">📌 此文案为历史展示内容，已不再使用</p>
         </div>
       </transition>
     </div>
@@ -80,6 +81,7 @@ const hasComfort = ref(false)
 const todayComfort = ref(null)
 const comfortMessage = ref('')
 const comfortDate = ref('')
+const isOriginalActive = ref(true)
 
 async function fetchTodayComfort() {
   comfortLoading.value = true
@@ -90,6 +92,7 @@ async function fetchTodayComfort() {
     todayComfort.value = data.message
     comfortMessage.value = data.message
     comfortDate.value = data.date
+    isOriginalActive.value = data.isOriginalActive !== false
   } catch (error) {
     console.error('获取今日安慰失败:', error)
     hasComfort.value = false
@@ -180,6 +183,14 @@ onMounted(() => {
   color: #8b6914;
   font-size: 14px;
   font-weight: 500;
+}
+
+.expired-hint {
+  color: #a0522d;
+  font-size: 12px;
+  margin-top: 12px;
+  opacity: 0.8;
+  font-style: normal;
 }
 
 .secret-card {

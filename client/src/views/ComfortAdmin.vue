@@ -1,8 +1,39 @@
 <template>
   <div class="admin-container">
-    <div class="card">
+    <div v-if="!isLoggedIn" class="card login-card">
       <div class="card-header">
-        <span class="icon">📻</span>
+        <span class="icon">🔐</span>
+        <h2>管理后台登录</h2>
+        <p class="login-hint">请输入管理员密码</p>
+      </div>
+
+      <div class="login-form">
+        <div class="form-group">
+          <label>管理员密码</label>
+          <input 
+            v-model="password" 
+            type="password" 
+            class="form-control"
+            placeholder="请输入密码"
+            @keyup.enter="login"
+            :disabled="loggingIn"
+          />
+        </div>
+        <button class="btn btn-primary btn-block" @click="login" :disabled="loggingIn">
+          {{ loggingIn ? '登录中...' : '登录' }}
+        </button>
+        <p v-if="loginError" class="error-text">{{ loginError }}</p>
+      </div>
+    </div>
+
+    <div v-else class="card">
+      <div class="card-header">
+        <div class="header-top">
+          <span class="icon">📻</span>
+          <button class="btn btn-secondary btn-sm logout-btn" @click="logout">
+            🚪 退出登录
+          </button>
+        </div>
         <h2>每日安慰电台 - 管理后台</h2>
       </div>
 
@@ -120,6 +151,13 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 
+const TOKEN_KEY = 'admin_token'
+
+const isLoggedIn = ref(false)
+const password = ref('')
+const loggingIn = ref(false)
+const loginError = ref('')
+
 const loading = ref(true)
 const saving = ref(false)
 const messages = ref([])
@@ -142,10 +180,109 @@ const filteredMessages = computed(() => {
   return messages.value.filter(m => m.status === filter.value)
 })
 
+function getAuthHeaders() {
+  const token = localStorage.getItem(TOKEN_KEY)
+  return {
+    'Content-Type': 'application/json',
+    'Authorization': `Bearer ${token}`
+  }
+}
+
+function handleUnauthorized() {
+  localStorage.removeItem(TOKEN_KEY)
+  isLoggedIn.value = false
+  loginError.value = '登录已过期，请重新登录'
+}
+
+async function verifyLogin() {
+  const token = localStorage.getItem(TOKEN_KEY)
+  if (!token) {
+    isLoggedIn.value = false
+    return
+  }
+
+  try {
+    const response = await fetch('/api/admin/verify', {
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+    const data = await response.json()
+    isLoggedIn.value = data.isAdmin
+    if (data.isAdmin) {
+      fetchMessages()
+    }
+  } catch (error) {
+    console.error('验证登录状态失败:', error)
+    isLoggedIn.value = false
+  }
+}
+
+async function login() {
+  if (!password.value.trim()) {
+    loginError.value = '请输入密码'
+    return
+  }
+
+  loggingIn.value = true
+  loginError.value = ''
+
+  try {
+    const response = await fetch('/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: password.value })
+    })
+
+    const data = await response.json()
+
+    if (response.ok && data.success) {
+      localStorage.setItem(TOKEN_KEY, data.token)
+      isLoggedIn.value = true
+      password.value = ''
+      window.dispatchEvent(new Event('admin-login'))
+      fetchMessages()
+    } else {
+      loginError.value = data.error || '登录失败'
+    }
+  } catch (error) {
+    console.error('登录失败:', error)
+    loginError.value = '登录失败，请稍后重试'
+  } finally {
+    loggingIn.value = false
+  }
+}
+
+async function logout() {
+  const token = localStorage.getItem(TOKEN_KEY)
+  try {
+    await fetch('/api/admin/logout', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${token}`
+      }
+    })
+  } catch (error) {
+    console.error('退出登录失败:', error)
+  }
+  localStorage.removeItem(TOKEN_KEY)
+  isLoggedIn.value = false
+  messages.value = []
+  window.dispatchEvent(new Event('admin-logout'))
+}
+
 async function fetchMessages() {
   loading.value = true
   try {
-    const response = await fetch('/api/comfort')
+    const response = await fetch('/api/comfort', {
+      headers: getAuthHeaders()
+    })
+
+    if (response.status === 401) {
+      handleUnauthorized()
+      return
+    }
+
     const data = await response.json()
     messages.value = data.messages.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
   } catch (error) {
@@ -176,9 +313,15 @@ async function toggleStatus(msg) {
   try {
     const response = await fetch(`/api/comfort/${msg.id}/status`, {
       method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify({ status: newStatus })
     })
+
+    if (response.status === 401) {
+      handleUnauthorized()
+      return
+    }
+
     const data = await response.json()
     if (data.success) {
       await fetchMessages()
@@ -202,15 +345,20 @@ async function saveMessage() {
     if (showAddModal.value) {
       response = await fetch('/api/comfort', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(form.value)
       })
     } else {
       response = await fetch(`/api/comfort/${editingId.value}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(form.value)
       })
+    }
+
+    if (response.status === 401) {
+      handleUnauthorized()
+      return
     }
 
     const data = await response.json()
@@ -246,7 +394,7 @@ function formatDate(dateStr) {
 }
 
 onMounted(() => {
-  fetchMessages()
+  verifyLogin()
 })
 </script>
 
@@ -254,6 +402,48 @@ onMounted(() => {
 .admin-container {
   width: 100%;
   max-width: 800px;
+}
+
+.login-card {
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+.login-hint {
+  color: #666;
+  font-size: 14px;
+  margin-top: 8px;
+}
+
+.login-form {
+  margin-top: 20px;
+}
+
+.btn-block {
+  width: 100%;
+}
+
+.error-text {
+  color: #f5576c;
+  font-size: 14px;
+  margin-top: 12px;
+  text-align: center;
+}
+
+.header-top {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 10px;
+}
+
+.logout-btn {
+  background: rgba(102, 126, 234, 0.1);
+  color: #667eea;
+  border: 1px solid rgba(102, 126, 234, 0.3);
+}
+
+.logout-btn:hover {
+  background: rgba(102, 126, 234, 0.2);
 }
 
 .card-header {
