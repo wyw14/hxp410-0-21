@@ -1,5 +1,30 @@
 <template>
   <div class="home-container">
+    <div class="card comfort-card">
+      <div class="card-header">
+        <span class="icon">📻</span>
+        <h2>每日安慰电台</h2>
+        <p class="date-text">{{ formatDate(comfortDate) }}</p>
+      </div>
+
+      <div v-if="comfortLoading" class="loading">
+        <div class="spinner"></div>
+        <p>正在准备今日的温暖...</p>
+      </div>
+
+      <div v-else-if="!hasComfort" class="empty-state">
+        <span class="empty-icon">🌸</span>
+        <p>{{ comfortMessage }}</p>
+      </div>
+
+      <transition name="fade" v-else>
+        <div class="comfort-content">
+          <p class="comfort-text">"{{ todayComfort.content }}"</p>
+          <p class="comfort-author">—— {{ todayComfort.author }}</p>
+        </div>
+      </transition>
+    </div>
+
     <div class="card secret-card">
       <div class="card-header">
         <span class="icon">💫</span>
@@ -50,6 +75,30 @@ const hasSecret = ref(false)
 const secret = ref(null)
 const message = ref('')
 
+const comfortLoading = ref(true)
+const hasComfort = ref(false)
+const todayComfort = ref(null)
+const comfortMessage = ref('')
+const comfortDate = ref('')
+
+async function fetchTodayComfort() {
+  comfortLoading.value = true
+  try {
+    const response = await fetch('/api/comfort/today')
+    const data = await response.json()
+    hasComfort.value = data.hasMessage
+    todayComfort.value = data.message
+    comfortMessage.value = data.message
+    comfortDate.value = data.date
+  } catch (error) {
+    console.error('获取今日安慰失败:', error)
+    hasComfort.value = false
+    comfortMessage.value = '暂时无法连接到温暖电台'
+  } finally {
+    comfortLoading.value = false
+  }
+}
+
 async function fetchRandomSecret() {
   loading.value = true
   try {
@@ -71,7 +120,19 @@ function goToConfess() {
   router.push('/confess')
 }
 
+function formatDate(dateStr) {
+  if (!dateStr) return ''
+  const date = new Date(dateStr)
+  return date.toLocaleDateString('zh-CN', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric',
+    weekday: 'long'
+  })
+}
+
 onMounted(() => {
+  fetchTodayComfort()
   fetchRandomSecret()
 })
 </script>
@@ -80,10 +141,49 @@ onMounted(() => {
 .home-container {
   width: 100%;
   max-width: 600px;
+  display: flex;
+  flex-direction: column;
+  gap: 30px;
+}
+
+.comfort-card {
+  animation: slideUp 0.6s ease 0.1s both;
+  background: linear-gradient(135deg, #ffecd2 0%, #fcb69f 100%);
+}
+
+.comfort-card .card-header h2 {
+  color: #8b4513;
+}
+
+.date-text {
+  color: #a0522d;
+  font-size: 14px;
+  margin-top: 8px;
+  font-weight: 400;
+}
+
+.comfort-content {
+  padding: 20px 0;
+  text-align: center;
+}
+
+.comfort-text {
+  font-size: 20px;
+  line-height: 1.8;
+  color: #5d4037;
+  font-style: italic;
+  margin-bottom: 15px;
+  padding: 0 10px;
+}
+
+.comfort-author {
+  color: #8b6914;
+  font-size: 14px;
+  font-weight: 500;
 }
 
 .secret-card {
-  animation: slideUp 0.6s ease;
+  animation: slideUp 0.6s ease 0.2s both;
 }
 
 @keyframes slideUp {
